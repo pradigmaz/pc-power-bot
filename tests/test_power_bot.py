@@ -113,6 +113,11 @@ class PowerBotTests(unittest.TestCase):
         self.assertIsNotNone(task)
         self.assertEqual(task.action, "sleep")
         self.assertEqual(task.deadline, self.now + 15)
+        self.assertEqual(
+            self.api.messages[-1][1],
+            "Запланировано: сон через 15 секунд после подтверждения. "
+            "Тестовый режим: сон/выключение не будет выполнено.",
+        )
 
     def test_stale_confirmation_cannot_confirm_a_new_proposal(self) -> None:
         self.bot.handle_update(self.callback("timer:duration:sleep:1800"))

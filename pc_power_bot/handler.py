@@ -186,7 +186,10 @@ class PowerBot:
             self.api.send_message(chat_id, "Не удалось сохранить таймер. Попробуйте ещё раз.", self._main_buttons())
             return
         self.pending.pop(chat_id, None)
-        self.api.send_message(chat_id, f"Запланировано: {self._describe(task)}.", self._main_buttons())
+        text = f"Запланировано: {self._describe(task)}."
+        if self.config.dry_run:
+            text += " Тестовый режим: сон/выключение не будет выполнено."
+        self.api.send_message(chat_id, text, self._main_buttons())
 
     def _cancel_pending(self, chat_id: int, token: str) -> None:
         proposal = self.pending.get(chat_id)
@@ -220,7 +223,7 @@ class PowerBot:
     @staticmethod
     def _describe(task: ScheduledTask | Proposal) -> str:
         action = "сон" if task.action == "sleep" else "выключение"
-        if isinstance(task, Proposal) and task.reason == "immediate":
+        if task.reason == "immediate":
             return f"{action} через 15 секунд после подтверждения"
         when = datetime.fromtimestamp(task.deadline).astimezone().strftime("%d.%m %H:%M:%S")
         return f"{action} в {when}"

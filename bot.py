@@ -28,7 +28,8 @@ def main() -> None:
         raise SystemExit(2) from exc
 
     if args.check:
-        logging.info("Configuration check passed; Telegram and power actions were not started")
+        mode = "disabled (DRY_RUN=1)" if config.dry_run else "enabled (DRY_RUN=0)"
+        logging.info("Configuration check passed; Telegram and power actions were not started. Power actions are %s.", mode)
         return
 
     api = TelegramApi(config.token)
