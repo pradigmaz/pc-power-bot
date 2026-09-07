@@ -7,23 +7,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+import bot as bot_entry
+
 from pc_power_bot.config import Config, ConfigError
 from pc_power_bot.domain import ScheduledTask, parse_clock, parse_duration
 from pc_power_bot.handler import PowerBot
 from pc_power_bot.power import PowerController
 from pc_power_bot.state import StateStore, TaskScheduler
+from pc_power_bot.telegram import TelegramApi, TelegramError
 
 
 class FakeApi:
     def __init__(self) -> None:
         self.acks: list[str] = []
         self.messages: list[tuple[int, str, object]] = []
+        self.edits: list[tuple[int, int, str, object]] = []
+        self.edit_error: Exception | None = None
 
     def answer_callback_query(self, callback_id: str, text: str | None = None) -> None:
         self.acks.append(callback_id)
 
     def send_message(self, chat_id: int, text: str, buttons=None) -> None:
         self.messages.append((chat_id, text, buttons))
+
+    def edit_message(self, chat_id: int, message_id: int, text: str, buttons=None) -> None:
+        if self.edit_error is not None:
+            raise self.edit_error
+        self.edits.append((chat_id, message_id, text, buttons))
 
 
 class PowerBotTests(unittest.TestCase):
@@ -54,12 +64,17 @@ class PowerBotTests(unittest.TestCase):
             }
         }
 
-    def callback(self, data: str, user_id: int = user_id, chat_type: str = "private") -> dict:
+    def callback(
+        self, data: str, user_id: int = user_id, chat_type: str = "private", message_id: int | None = None
+    ) -> dict:
+        message: dict[str, object] = {"chat": {"id": user_id, "type": chat_type}}
+        if message_id is not None:
+            message["message_id"] = message_id
         return {
             "callback_query": {
                 "id": "callback-1",
                 "from": {"id": user_id},
-                "message": {"chat": {"id": user_id, "type": chat_type}},
+                "message": message,
                 "data": data,
             }
         }
@@ -103,6 +118,87 @@ class PowerBotTests(unittest.TestCase):
         self.bot.handle_update(self.callback("immediate:shutdown"))
         self.assertIsNone(self.bot.scheduler.status())
         self.assertIn(self.user_id, self.bot.pending)
+
+    def test_callbacks_edit_the_existing_control_panel(self) -> None:
+        panel_id = 77
+        self.bot.handle_update(self.callback("menu:extra", message_id=panel_id))
+        self.bot.handle_update(self.callback("immediate:sleep", message_id=panel_id))
+        self.bot.handle_update(self.callback(f"confirm:{self.pending_token()}", message_id=panel_id))
+
+        self.assertEqual(self.api.messages, [])
+        self.assertEqual([edit[1] for edit in self.api.edits], [panel_id, panel_id, panel_id])
+        self.assertIn("Запланировано", self.api.edits[-1][2])
+
+    def test_clock_input_edits_the_existing_control_panel(self) -> None:
+        panel_id = 77
+        self.bot.handle_update(self.callback("timer:clock:sleep", message_id=panel_id))
+        self.bot.handle_update(self.message(text="23:30"))
+
+        self.assertEqual(self.api.messages, [])
+        self.assertEqual([edit[1] for edit in self.api.edits], [panel_id, panel_id])
+        self.assertIn("Подтвердить", self.api.edits[-1][2])
+
+    def test_panel_edit_uses_telegram_edit_message_text(self) -> None:
+        api = TelegramApi("test-token")
+        with patch.object(api, "_call") as call:
+            api.edit_message(self.user_id, 77, "Панель", [[("Назад", "menu:main")]])
+
+        call.assert_called_once_with(
+            "editMessageText",
+            {
+                "chat_id": self.user_id,
+                "message_id": 77,
+                "text": "Панель",
+                "reply_markup": {"inline_keyboard": [[{"text": "Назад", "callback_data": "menu:main"}]]},
+            },
+        )
+
+    def test_unchanged_panel_does_not_create_a_fallback_message(self) -> None:
+        self.api.edit_error = TelegramError("Bad Request: message is not modified")
+        self.bot.handle_update(self.callback("action:status", message_id=77))
+
+        self.assertEqual(self.api.edits, [])
+        self.assertEqual(self.api.messages, [])
+
+    def test_telegram_error_keeps_api_description(self) -> None:
+        class FailedResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def read(self):
+                return b'{"ok": false, "description": "Bad Request: message is not modified"}'
+
+        with patch("pc_power_bot.telegram.urllib.request.urlopen", return_value=FailedResponse()):
+            with self.assertRaisesRegex(TelegramError, "message is not modified"):
+                TelegramApi("test-token")._call("editMessageText", {})
+
+    def test_source_change_restarts_the_current_python_process(self) -> None:
+        restarted: list[tuple[str, list[str]]] = []
+        snapshot = (("bot.py", 1),)
+        updated_snapshot = (("bot.py", 2),)
+
+        with patch.object(bot_entry, "_runtime_source_snapshot", return_value=updated_snapshot):
+            with patch.object(bot_entry.sys, "argv", ["bot.py"]):
+                restarted_now = bot_entry._restart_if_sources_changed(
+                    Path(self.temp.name), snapshot, lambda executable, args: restarted.append((executable, args)), lambda _: None
+                )
+
+        self.assertTrue(restarted_now)
+        self.assertEqual(restarted, [(bot_entry.sys.executable, [bot_entry.sys.executable, "bot.py"])])
+
+    def test_source_change_waits_for_a_stable_file_set(self) -> None:
+        snapshot = (("bot.py", 1),)
+        with patch.object(
+            bot_entry, "_runtime_source_snapshot", side_effect=[(("bot.py", 2),), (("bot.py", 3),)]
+        ):
+            restarted_now = bot_entry._restart_if_sources_changed(
+                Path(self.temp.name), snapshot, lambda *_: self.fail("restart must wait"), lambda _: None
+            )
+
+        self.assertFalse(restarted_now)
 
     def test_immediate_action_gets_a_fresh_15_second_grace_period(self) -> None:
         self.bot.handle_update(self.callback("immediate:sleep"))

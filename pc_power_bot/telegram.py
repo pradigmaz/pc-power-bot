@@ -35,13 +35,28 @@ class TelegramApi:
     def send_message(self, chat_id: int, text: str, buttons: list[list[tuple[str, str]]] | None = None) -> None:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
         if buttons:
-            payload["reply_markup"] = {
-                "inline_keyboard": [
-                    [{"text": label, "callback_data": data} for label, data in row]
-                    for row in buttons
-                ]
-            }
+            payload["reply_markup"] = self._reply_markup(buttons)
         self._call("sendMessage", payload)
+
+    def edit_message(
+        self, chat_id: int, message_id: int, text: str, buttons: list[list[tuple[str, str]]] | None = None
+    ) -> None:
+        payload: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "reply_markup": self._reply_markup(buttons),
+        }
+        self._call("editMessageText", payload)
+
+    @staticmethod
+    def _reply_markup(buttons: list[list[tuple[str, str]]] | None) -> dict[str, list[list[dict[str, str]]]]:
+        return {
+            "inline_keyboard": [
+                [{"text": label, "callback_data": data} for label, data in row]
+                for row in buttons or []
+            ]
+        }
 
     def _call(self, method: str, payload: dict[str, Any], timeout: int | None = None) -> Any:
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
@@ -57,5 +72,7 @@ class TelegramApi:
         except (OSError, json.JSONDecodeError) as exc:
             raise TelegramError("Telegram API request failed") from exc
         if not isinstance(decoded, dict) or not decoded.get("ok"):
-            raise TelegramError("Telegram API returned an error")
+            description = decoded.get("description") if isinstance(decoded, dict) else None
+            detail = f": {description}" if isinstance(description, str) else ""
+            raise TelegramError(f"Telegram API returned an error{detail}")
         return decoded.get("result")

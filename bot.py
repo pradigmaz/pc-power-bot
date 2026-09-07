@@ -4,12 +4,39 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import sys
 import time
 from pathlib import Path
 
 from pc_power_bot.config import Config, ConfigError
 from pc_power_bot.handler import PowerBot
 from pc_power_bot.telegram import TelegramApi, TelegramError
+
+
+def _runtime_source_snapshot(project_root: Path) -> tuple[tuple[str, int], ...] | None:
+    sources = [project_root / "bot.py", *sorted((project_root / "pc_power_bot").glob("*.py"))]
+    try:
+        return tuple((str(source), source.stat().st_mtime_ns) for source in sources)
+    except OSError:
+        return None
+
+
+def _restart_if_sources_changed(
+    project_root: Path,
+    source_snapshot: tuple[tuple[str, int], ...] | None,
+    execute=os.execv,
+    sleep=time.sleep,
+) -> bool:
+    current_snapshot = _runtime_source_snapshot(project_root)
+    if source_snapshot is None or current_snapshot is None or current_snapshot == source_snapshot:
+        return False
+    sleep(1)
+    if _runtime_source_snapshot(project_root) != current_snapshot:
+        return False
+    logging.info("Python source update detected; restarting the bot process")
+    execute(sys.executable, [sys.executable, *sys.argv])
+    return True
 
 
 def main() -> None:
@@ -22,7 +49,8 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
-        config = Config.from_environment(base_dir=Path(__file__).resolve().parent)
+        project_root = Path(__file__).resolve().parent
+        config = Config.from_environment(base_dir=project_root)
     except ConfigError as exc:
         logging.error("Invalid bot configuration: %s", exc)
         raise SystemExit(2) from exc
@@ -36,6 +64,7 @@ def main() -> None:
     bot = PowerBot(config, api)
     bot.restore()
     offset: int | None = None
+    source_snapshot = _runtime_source_snapshot(project_root)
     while True:
         try:
             for update in api.get_updates(offset, config.poll_timeout):
@@ -48,6 +77,8 @@ def main() -> None:
             time.sleep(5)
         except KeyboardInterrupt:
             logging.info("Bot stopped")
+            return
+        if _restart_if_sources_changed(project_root, source_snapshot):
             return
 
 
