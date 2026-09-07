@@ -30,6 +30,9 @@ if not defined PCPB_PYTHON (
 
 "%PCPB_PYTHON%" --version
 
+where.exe git >nul 2>&1
+if errorlevel 1 echo [NOTE] Git was not found. The bot will work, but automatic source updates are unavailable.
+
 if exist ".env" set "PCPB_ENV_FILE_READY=1"
 if not defined PCPB_ENV_FILE_READY echo [NOTE] .env is missing. The config check can only pass with environment variables.
 

@@ -117,6 +117,13 @@ class PowerBotTests(unittest.TestCase):
         self.assertEqual(self.api.acks, ["callback-1"])
         self.assertEqual(self.api.messages, [])
 
+    def test_main_menu_names_timer_cancellation(self) -> None:
+        self.bot.handle_update(self.message())
+
+        labels = [label for row in self.api.messages[-1][2] for label, _ in row]
+
+        self.assertEqual(labels, ["⏱ Таймер", "Статус", "Дополнительно", "Отменить таймер"])
+
     def test_no_power_action_happens_before_confirmation(self) -> None:
         self.bot.handle_update(self.callback("immediate:shutdown"))
         self.assertIsNone(self.bot.scheduler.status())
@@ -150,6 +157,19 @@ class PowerBotTests(unittest.TestCase):
         _, _, text, buttons = self.api.edits[-1]
         self.assertEqual(text, "Когда перевести ПК в сон?")
         self.assertEqual([label for row in buttons for label, _ in row], ["Через", "В точное время", "Назад"])
+
+    def test_relative_timer_keeps_its_duration_after_confirmation(self) -> None:
+        self.bot.handle_update(self.callback("timer:duration:sleep:5400"))
+        self.confirm_pending()
+
+        task = self.bot.scheduler.status()
+        self.assertIsNotNone(task)
+        self.assertEqual(
+            self.api.messages[-1][1],
+            "Запланировано: сон через 90 минут. Тестовый режим: сон/выключение не будет выполнено.",
+        )
+        self.bot.handle_update(self.callback("action:status"))
+        self.assertIn("сон в ", self.api.messages[-1][1])
 
     def test_custom_delay_edits_the_control_panel(self) -> None:
         panel_id = 77
@@ -228,6 +248,39 @@ class PowerBotTests(unittest.TestCase):
             )
 
         self.assertFalse(restarted_now)
+
+    def test_auto_update_uses_main_fast_forward_only(self) -> None:
+        calls: list[tuple[list[str], dict]] = []
+
+        def runner(command, **kwargs):
+            calls.append((command, kwargs))
+            stdout = "main\n" if command[-3:] == ["rev-parse", "--abbrev-ref", "HEAD"] else None
+            return subprocess.CompletedProcess(command, 0, stdout=stdout)
+
+        self.assertTrue(bot_entry._auto_update_repository(Path(self.temp.name), runner))
+        self.assertEqual(
+            [command[3:] for command, _ in calls],
+            [
+                ["rev-parse", "--abbrev-ref", "HEAD"],
+                ["diff", "--quiet"],
+                ["diff", "--cached", "--quiet"],
+                ["pull", "--ff-only", "--quiet", "origin", "main"],
+            ],
+        )
+        self.assertEqual(calls[0][1]["env"]["GIT_TERMINAL_PROMPT"], "0")
+        self.assertEqual(calls[-1][1]["stdout"], subprocess.DEVNULL)
+
+    def test_auto_update_skips_a_dirty_checkout(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command, **kwargs):
+            calls.append(command)
+            if command[-2:] == ["diff", "--quiet"]:
+                return subprocess.CompletedProcess(command, 1)
+            return subprocess.CompletedProcess(command, 0, stdout="main\n")
+
+        self.assertFalse(bot_entry._auto_update_repository(Path(self.temp.name), runner))
+        self.assertEqual([command[3:] for command in calls], [["rev-parse", "--abbrev-ref", "HEAD"], ["diff", "--quiet"]])
 
     def test_immediate_action_gets_a_fresh_15_second_grace_period(self) -> None:
         self.bot.handle_update(self.callback("immediate:sleep"))

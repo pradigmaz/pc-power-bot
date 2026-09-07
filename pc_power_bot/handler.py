@@ -246,7 +246,7 @@ class PowerBot:
             self._respond(chat_id, "Не удалось сохранить таймер. Попробуйте ещё раз.", self._main_buttons(), message_id)
             return
         self.pending.pop(chat_id, None)
-        text = f"Запланировано: {self._describe(task)}."
+        text = f"Запланировано: {self._describe(proposal)}."
         if self.config.dry_run:
             text += " Тестовый режим: сон/выключение не будет выполнено."
         self._respond(chat_id, text, self._main_buttons(), message_id)
@@ -333,7 +333,10 @@ class PowerBot:
 
     @staticmethod
     def _main_buttons() -> ButtonRows:
-        return [[("⏱ Таймер", "menu:timer"), ("Статус", "action:status")], [("Дополнительно", "menu:extra"), ("Отмена", "action:cancel")]]
+        return [
+            [("⏱ Таймер", "menu:timer"), ("Статус", "action:status")],
+            [("Дополнительно", "menu:extra"), ("Отменить таймер", "action:cancel")],
+        ]
 
     @staticmethod
     def _timer_back_buttons(action: str) -> ButtonRows:
@@ -366,7 +369,7 @@ class PowerBot:
         buttons = [
             [("15 минут", f"timer:duration:{action}:900"), ("30 минут", f"timer:duration:{action}:1800")],
             [("1 час", f"timer:duration:{action}:3600"), ("2 часа", f"timer:duration:{action}:7200")],
-            [("Указать самому", f"timer:delay-input:{action}")],
+            [("Другое время", f"timer:delay-input:{action}")],
             [("Назад", f"timer:action:{action}")],
         ]
         text = "Через сколько перевести ПК в сон?" if action == "sleep" else "Через сколько выключить ПК?"
