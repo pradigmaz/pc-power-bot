@@ -109,7 +109,7 @@ class PowerBot:
         elif data.startswith("confirm:"):
             self._confirm_pending(chat_id, data.removeprefix("confirm:"), message_id)
         elif data.startswith("replace:"):
-            self._confirm_pending(chat_id, data.removeprefix("replace:"), message_id, replacement_confirmed=True)
+            self._confirm_pending(chat_id, data.removeprefix("replace:"), message_id)
         elif data.startswith("cancel:"):
             self._cancel_pending(chat_id, data.removeprefix("cancel:"), message_id)
 
@@ -208,21 +208,16 @@ class PowerBot:
         message_id: int | None = None,
         delay_seconds: int | None = None,
     ) -> None:
+        current = self.scheduler.status()
+        if current is not None:
+            self._already_scheduled(chat_id, current, message_id)
+            return
         proposal = Proposal(action, deadline, chat_id, reason, secrets.token_urlsafe(6), delay_seconds)
         self.pending[chat_id] = proposal
         self._clear_waiting(chat_id)
-        current = self.scheduler.status()
-        if current is not None:
-            text = f"Уже запланировано: {self._describe(current)}. Заменить на {self._describe(proposal)}?"
-            buttons = self._proposal_buttons(proposal, replacement=True)
-        else:
-            text = f"Подтвердить: {self._describe(proposal)}?"
-            buttons = self._proposal_buttons(proposal)
-        self._respond(chat_id, text, buttons, message_id)
+        self._respond(chat_id, f"Подтвердить: {self._describe(proposal)}?", self._proposal_buttons(proposal), message_id)
 
-    def _confirm_pending(
-        self, chat_id: int, token: str, message_id: int | None = None, replacement_confirmed: bool = False
-    ) -> None:
+    def _confirm_pending(self, chat_id: int, token: str, message_id: int | None = None) -> None:
         proposal = self.pending.get(chat_id)
         if proposal is None or not secrets.compare_digest(proposal.token, token):
             return
@@ -231,13 +226,8 @@ class PowerBot:
             self._respond(chat_id, "Время подтверждения истекло. Выберите таймер заново.", self._main_buttons(), message_id)
             return
         current = self.scheduler.status()
-        if current is not None and not replacement_confirmed:
-            self._respond(
-                chat_id,
-                f"Уже запланировано: {self._describe(current)}. Подтвердите замену.",
-                self._proposal_buttons(proposal, replacement=True),
-                message_id,
-            )
+        if current is not None:
+            self._already_scheduled(chat_id, current, message_id)
             return
         deadline = self.now() + 15 if proposal.reason == "immediate" else proposal.deadline
         task = ScheduledTask(proposal.action, deadline, proposal.owner_id, proposal.reason)
@@ -252,6 +242,16 @@ class PowerBot:
         if self.config.dry_run:
             text += " Тестовый режим: сон/выключение не будет выполнено."
         self._respond(chat_id, text, self._main_buttons(), message_id)
+
+    def _already_scheduled(self, chat_id: int, current: ScheduledTask, message_id: int | None = None) -> None:
+        self.pending.pop(chat_id, None)
+        self._clear_waiting(chat_id)
+        self._respond(
+            chat_id,
+            f"Уже запланировано: {self._describe(current)}. Новый таймер не создан.",
+            self._main_buttons(),
+            message_id,
+        )
 
     def _cancel_pending(self, chat_id: int, token: str, message_id: int | None = None) -> None:
         proposal = self.pending.get(chat_id)
@@ -328,10 +328,8 @@ class PowerBot:
         return one if remainder == 1 else few if 2 <= remainder <= 4 else many
 
     @staticmethod
-    def _proposal_buttons(proposal: Proposal, replacement: bool = False) -> ButtonRows:
-        confirm = "replace" if replacement else "confirm"
-        label = "🔁 Заменить" if replacement else "✅ Подтвердить"
-        return [[(label, f"{confirm}:{proposal.token}"), ("✖️ Отмена", f"cancel:{proposal.token}")]]
+    def _proposal_buttons(proposal: Proposal) -> ButtonRows:
+        return [[("✅ Подтвердить", f"confirm:{proposal.token}"), ("✖️ Отмена", f"cancel:{proposal.token}")]]
 
     @staticmethod
     def _main_buttons() -> ButtonRows:
@@ -358,6 +356,7 @@ class PowerBot:
             "3. Проверьте действие и нажмите ✅ Подтвердить.\n\n"
             "📋 Статус — посмотреть активный таймер.\n"
             "✖️ Отменить таймер — отменить его.\n"
+            "Если таймер уже запланирован, новый не заменяет его.\n"
             "⚙️ Дополнительно — сон или выключение через 15 секунд после подтверждения.\n\n"
             "Если бот не отвечает:\n"
             "• ПК включён и подключён к интернету;\n"

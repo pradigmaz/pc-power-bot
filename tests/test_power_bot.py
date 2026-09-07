@@ -339,15 +339,33 @@ class PowerBotTests(unittest.TestCase):
         self.bot.handle_update(self.callback("action:cancel"))
         self.assertIsNone(self.bot.scheduler.status())
 
-    def test_replacement_requires_the_same_proposal_token(self) -> None:
+    def test_second_user_cannot_replace_an_existing_timer(self) -> None:
         self.bot.handle_update(self.callback("timer:duration:sleep:1800"))
         self.confirm_pending()
+        second_user = 2_222_222_222
+
+        self.bot.handle_update(self.callback("timer:duration:shutdown:3600", user_id=second_user))
+
+        task = self.bot.scheduler.status()
+        self.assertIsNotNone(task)
+        self.assertEqual(task.action, "sleep")
+        self.assertNotIn(second_user, self.bot.pending)
+        chat_id, text, _ = self.api.messages[-1]
+        self.assertEqual(chat_id, second_user)
+        self.assertIn("Уже запланировано: сон", text)
+        self.assertIn("Новый таймер не создан.", text)
+
+    def test_legacy_replace_callback_cannot_replace_an_existing_timer(self) -> None:
         self.bot.handle_update(self.callback("timer:duration:shutdown:3600"))
         token = self.pending_token()
-        self.bot.handle_update(self.callback(f"confirm:{token}"))
-        self.assertEqual(self.bot.scheduler.status().action, "sleep")
+        existing = ScheduledTask("sleep", self.now + 1800, self.user_id)
+        self.bot.scheduler.schedule(existing)
+
         self.bot.handle_update(self.callback(f"replace:{token}"))
-        self.assertEqual(self.bot.scheduler.status().action, "shutdown")
+
+        self.assertEqual(self.bot.scheduler.status(), existing)
+        self.assertNotIn(self.user_id, self.bot.pending)
+        self.assertIn("Новый таймер не создан.", self.api.messages[-1][1])
 
     def test_cancel_command_leaves_time_and_delay_input_modes(self) -> None:
         self.bot.handle_update(self.callback("timer:clock:sleep"))
