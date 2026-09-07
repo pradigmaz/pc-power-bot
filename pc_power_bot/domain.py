@@ -26,6 +26,7 @@ class Proposal:
     owner_id: int
     reason: str
     token: str
+    delay_seconds: int | None = None
 
 
 def parse_duration(value: str) -> int | None:

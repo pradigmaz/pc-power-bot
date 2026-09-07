@@ -87,10 +87,13 @@ class PowerBotTests(unittest.TestCase):
 
     def test_duration_and_clock_parsing(self) -> None:
         self.assertEqual(parse_duration("30 мин"), 1800)
+        self.assertEqual(parse_duration("90 минут"), 5400)
         self.assertEqual(parse_duration("1h"), 3600)
         current = datetime(2026, 8, 29, 22, 0, tzinfo=timezone.utc)
         deadline = parse_clock("23:30", current)
         self.assertEqual(datetime.fromtimestamp(deadline, timezone.utc).hour, 23)
+        tomorrow = datetime.fromtimestamp(parse_clock("21:30", current), timezone.utc)
+        self.assertEqual((tomorrow.day, tomorrow.hour), (30, 21))
         self.assertIsNone(parse_duration("0m"))
         self.assertIsNone(parse_duration("8 days"))
 
@@ -131,12 +134,38 @@ class PowerBotTests(unittest.TestCase):
 
     def test_clock_input_edits_the_existing_control_panel(self) -> None:
         panel_id = 77
+        self.bot.handle_update(self.callback("timer:action:sleep", message_id=panel_id))
         self.bot.handle_update(self.callback("timer:clock:sleep", message_id=panel_id))
+        self.assertIn("прошедшее время будет завтра", self.api.edits[-1][2])
         self.bot.handle_update(self.message(text="23:30"))
 
         self.assertEqual(self.api.messages, [])
-        self.assertEqual([edit[1] for edit in self.api.edits], [panel_id, panel_id])
+        self.assertEqual([edit[1] for edit in self.api.edits], [panel_id, panel_id, panel_id])
         self.assertIn("Подтвердить", self.api.edits[-1][2])
+
+    def test_timer_clearly_separates_after_and_exact_time(self) -> None:
+        panel_id = 77
+        self.bot.handle_update(self.callback("timer:action:sleep", message_id=panel_id))
+
+        _, _, text, buttons = self.api.edits[-1]
+        self.assertEqual(text, "Когда перевести ПК в сон?")
+        self.assertEqual([label for row in buttons for label, _ in row], ["Через", "В точное время", "Назад"])
+
+    def test_custom_delay_edits_the_control_panel(self) -> None:
+        panel_id = 77
+        self.bot.handle_update(self.callback("timer:action:shutdown", message_id=panel_id))
+        self.bot.handle_update(self.callback("timer:mode:delay:shutdown", message_id=panel_id))
+        self.bot.handle_update(self.callback("timer:delay-input:shutdown", message_id=panel_id))
+        self.bot.handle_update(self.message(text="скоро"))
+        self.assertIn(self.user_id, self.bot.awaiting_duration)
+        self.assertIn("Напишите задержку", self.api.edits[-1][2])
+        self.bot.handle_update(self.message(text="90 минут"))
+
+        proposal = self.bot.pending[self.user_id]
+        self.assertEqual((proposal.action, proposal.deadline), ("shutdown", self.now + 5400))
+        self.assertEqual(self.api.edits[-1][2], "Подтвердить: выключение через 90 минут?")
+        self.assertEqual(self.api.messages, [])
+        self.assertEqual([edit[1] for edit in self.api.edits], [panel_id, panel_id, panel_id, panel_id, panel_id])
 
     def test_panel_edit_uses_telegram_edit_message_text(self) -> None:
         api = TelegramApi("test-token")
@@ -250,11 +279,15 @@ class PowerBotTests(unittest.TestCase):
         self.bot.handle_update(self.callback(f"replace:{token}"))
         self.assertEqual(self.bot.scheduler.status().action, "shutdown")
 
-    def test_cancel_command_leaves_clock_input_mode(self) -> None:
+    def test_cancel_command_leaves_time_and_delay_input_modes(self) -> None:
         self.bot.handle_update(self.callback("timer:clock:sleep"))
         self.assertIn(self.user_id, self.bot.awaiting_time)
         self.bot.handle_update(self.message(text="/cancel"))
         self.assertNotIn(self.user_id, self.bot.awaiting_time)
+        self.bot.handle_update(self.callback("timer:delay-input:sleep"))
+        self.assertIn(self.user_id, self.bot.awaiting_duration)
+        self.bot.handle_update(self.message(text="/cancel"))
+        self.assertNotIn(self.user_id, self.bot.awaiting_duration)
 
     def test_dry_run_never_calls_subprocess(self) -> None:
         calls: list[object] = []

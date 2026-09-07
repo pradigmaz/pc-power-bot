@@ -25,6 +25,7 @@ class PowerBot:
         self.now = now
         self.pending: dict[int, Proposal] = {}
         self.awaiting_time: dict[int, tuple[str, int | None]] = {}
+        self.awaiting_duration: dict[int, tuple[str, int | None]] = {}
         controller = PowerController(config.dry_run)
         self.scheduler = TaskScheduler(StateStore(config.state_path), controller.execute, now=now)
 
@@ -46,12 +47,9 @@ class PowerBot:
         text = message.get("text", "").strip()
         command = text.casefold().split(maxsplit=1)[0] if text else ""
         if command in {"/start", "/menu"}:
-            self.awaiting_time.pop(chat_id, None)
             self._send_main(chat_id)
         elif command == "/cancel":
             self._cancel(chat_id)
-        elif chat_id in self.awaiting_time and text:
-            self._handle_clock_input(chat_id, text)
         elif command == "/timer":
             self._handle_timer_command(chat_id, text)
         elif command == "/at":
@@ -60,6 +58,10 @@ class PowerBot:
             self._send_status(chat_id)
         elif command in {"/extra", "/advanced"}:
             self._send_extra(chat_id)
+        elif chat_id in self.awaiting_time and text:
+            self._handle_clock_input(chat_id, text)
+        elif chat_id in self.awaiting_duration and text:
+            self._handle_duration_input(chat_id, text)
 
     def _handle_callback(self, callback: dict[str, Any]) -> None:
         callback_id = str(callback.get("id", ""))
@@ -85,9 +87,13 @@ class PowerBot:
         elif data == "menu:timer":
             self._send_timer_actions(chat_id, message_id)
         elif data.startswith("timer:action:"):
-            self._send_timer_options(chat_id, data.removeprefix("timer:action:"), message_id)
+            self._send_timer_modes(chat_id, data.removeprefix("timer:action:"), message_id)
+        elif data.startswith("timer:mode:delay:"):
+            self._send_duration_options(chat_id, data.removeprefix("timer:mode:delay:"), message_id)
         elif data.startswith("timer:duration:"):
             self._duration_proposal(chat_id, data.removeprefix("timer:duration:"), message_id)
+        elif data.startswith("timer:delay-input:"):
+            self._duration_prompt(chat_id, data.removeprefix("timer:delay-input:"), message_id)
         elif data.startswith("timer:clock:"):
             self._clock_prompt(chat_id, data.removeprefix("timer:clock:"), message_id)
         elif data == "menu:extra":
@@ -110,7 +116,9 @@ class PowerBot:
         if len(parts) == 3 and parts[1].casefold() in {"sleep", "shutdown"}:
             seconds = parse_duration(parts[2])
             if seconds:
-                self._show_proposal(chat_id, parts[1].casefold(), self.now() + seconds, "timer")
+                self._show_proposal(
+                    chat_id, parts[1].casefold(), self.now() + seconds, "timer", delay_seconds=seconds
+                )
                 return
         self._send_timer_actions(chat_id)
 
@@ -127,10 +135,29 @@ class PowerBot:
         action, message_id = self.awaiting_time.pop(chat_id)
         deadline = parse_clock(text, datetime.fromtimestamp(self.now()).astimezone())
         if deadline is None:
-            self._respond(chat_id, "Формат времени: HH:MM. Попробуйте ещё раз.", message_id=message_id)
+            self._respond(
+                chat_id,
+                "Напишите время в формате HH:MM, например 23:30.",
+                self._timer_back_buttons(action),
+                message_id,
+            )
             self.awaiting_time[chat_id] = (action, message_id)
             return
         self._show_proposal(chat_id, action, deadline, "timer", message_id)
+
+    def _handle_duration_input(self, chat_id: int, text: str) -> None:
+        action, message_id = self.awaiting_duration.pop(chat_id)
+        seconds = parse_duration(text)
+        if seconds is None:
+            self._respond(
+                chat_id,
+                "Напишите задержку, например 90 минут или 2 часа.",
+                self._timer_back_buttons(action),
+                message_id,
+            )
+            self.awaiting_duration[chat_id] = (action, message_id)
+            return
+        self._show_proposal(chat_id, action, self.now() + seconds, "timer", message_id, delay_seconds=seconds)
 
     def _duration_proposal(self, chat_id: int, value: str, message_id: int | None = None) -> None:
         try:
@@ -140,24 +167,48 @@ class PowerBot:
             return
         if action not in {"sleep", "shutdown"} or not 0 < seconds <= 7 * 24 * 3600:
             return
-        self._show_proposal(chat_id, action, self.now() + seconds, "timer", message_id)
+        self._show_proposal(chat_id, action, self.now() + seconds, "timer", message_id, delay_seconds=seconds)
 
     def _clock_prompt(self, chat_id: int, action: str, message_id: int | None = None) -> None:
         if action not in {"sleep", "shutdown"}:
             return
+        self.awaiting_duration.pop(chat_id, None)
         self.awaiting_time[chat_id] = (action, message_id)
-        self._respond(chat_id, "Отправьте время в формате HH:MM по времени этого ПК.", message_id=message_id)
+        self._respond(
+            chat_id,
+            "Напишите точное время, например 23:30. Используется время этого ПК; прошедшее время будет завтра.",
+            self._timer_back_buttons(action),
+            message_id,
+        )
+
+    def _duration_prompt(self, chat_id: int, action: str, message_id: int | None = None) -> None:
+        if action not in {"sleep", "shutdown"}:
+            return
+        self.awaiting_time.pop(chat_id, None)
+        self.awaiting_duration[chat_id] = (action, message_id)
+        self._respond(
+            chat_id,
+            "Напишите задержку, например 90 минут или 2 часа.",
+            self._timer_back_buttons(action),
+            message_id,
+        )
 
     def _immediate_proposal(self, chat_id: int, action: str, message_id: int | None = None) -> None:
         if action in {"sleep", "shutdown"}:
             self._show_proposal(chat_id, action, 0.0, "immediate", message_id)
 
     def _show_proposal(
-        self, chat_id: int, action: str, deadline: float, reason: str, message_id: int | None = None
+        self,
+        chat_id: int,
+        action: str,
+        deadline: float,
+        reason: str,
+        message_id: int | None = None,
+        delay_seconds: int | None = None,
     ) -> None:
-        proposal = Proposal(action, deadline, chat_id, reason, secrets.token_urlsafe(6))
+        proposal = Proposal(action, deadline, chat_id, reason, secrets.token_urlsafe(6), delay_seconds)
         self.pending[chat_id] = proposal
-        self.awaiting_time.pop(chat_id, None)
+        self._clear_waiting(chat_id)
         current = self.scheduler.status()
         if current is not None:
             text = f"Уже запланировано: {self._describe(current)}. Заменить на {self._describe(proposal)}?"
@@ -205,18 +256,19 @@ class PowerBot:
         if proposal is None or not secrets.compare_digest(proposal.token, token):
             return
         self.pending.pop(chat_id, None)
-        self.awaiting_time.pop(chat_id, None)
+        self._clear_waiting(chat_id)
         self._respond(chat_id, "Отменено.", self._main_buttons(), message_id)
 
     def _cancel(self, chat_id: int, message_id: int | None = None) -> None:
         self.pending.pop(chat_id, None)
-        self.awaiting_time.pop(chat_id, None)
+        self._clear_waiting(chat_id)
         cancelled = self.scheduler.cancel()
         self._respond(
             chat_id, "Активных задач нет." if cancelled is None else "Таймер отменён.", self._main_buttons(), message_id
         )
 
     def _send_status(self, chat_id: int, message_id: int | None = None) -> None:
+        self._clear_waiting(chat_id)
         task = self.scheduler.status()
         text = "Активных задач нет." if task is None else f"Запланировано: {self._describe(task)}."
         self._respond(chat_id, text, self._main_buttons(), message_id)
@@ -244,13 +296,34 @@ class PowerBot:
         sender = callback.get("from") or {}
         return chat.get("type") == "private" and sender.get("id") in self.config.allowed_user_ids
 
-    @staticmethod
-    def _describe(task: ScheduledTask | Proposal) -> str:
+    def _clear_waiting(self, chat_id: int) -> None:
+        self.awaiting_time.pop(chat_id, None)
+        self.awaiting_duration.pop(chat_id, None)
+
+    def _describe(self, task: ScheduledTask | Proposal) -> str:
         action = "сон" if task.action == "sleep" else "выключение"
         if task.reason == "immediate":
             return f"{action} через 15 секунд после подтверждения"
+        if isinstance(task, Proposal) and task.delay_seconds is not None:
+            return f"{action} через {self._format_duration(task.delay_seconds)}"
         when = datetime.fromtimestamp(task.deadline).astimezone().strftime("%d.%m %H:%M:%S")
         return f"{action} в {when}"
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        minutes = seconds // 60
+        if minutes % 60 == 0:
+            hours = minutes // 60
+            return f"{hours} {PowerBot._plural(hours, 'час', 'часа', 'часов')}"
+        return f"{minutes} {PowerBot._plural(minutes, 'минуту', 'минуты', 'минут')}"
+
+    @staticmethod
+    def _plural(value: int, one: str, few: str, many: str) -> str:
+        remainder = value % 100
+        if 11 <= remainder <= 14:
+            return many
+        remainder %= 10
+        return one if remainder == 1 else few if 2 <= remainder <= 4 else many
 
     @staticmethod
     def _proposal_buttons(proposal: Proposal, replacement: bool = False) -> ButtonRows:
@@ -262,23 +335,44 @@ class PowerBot:
     def _main_buttons() -> ButtonRows:
         return [[("⏱ Таймер", "menu:timer"), ("Статус", "action:status")], [("Дополнительно", "menu:extra"), ("Отмена", "action:cancel")]]
 
+    @staticmethod
+    def _timer_back_buttons(action: str) -> ButtonRows:
+        return [[("Назад", f"timer:action:{action}")]]
+
     def _send_main(self, chat_id: int, message_id: int | None = None) -> None:
+        self._clear_waiting(chat_id)
         self._respond(chat_id, "Выберите действие.", self._main_buttons(), message_id)
 
     def _send_timer_actions(self, chat_id: int, message_id: int | None = None) -> None:
-        buttons = [[("Сон", "timer:action:sleep"), ("Выключение", "timer:action:shutdown")], [("Назад", "menu:main")]]
-        self._respond(chat_id, "Что запланировать?", buttons, message_id)
+        self._clear_waiting(chat_id)
+        buttons = [[("Сон", "timer:action:sleep"), ("Выключить ПК", "timer:action:shutdown")], [("Назад", "menu:main")]]
+        self._respond(chat_id, "Что сделать с ПК?", buttons, message_id)
 
-    def _send_timer_options(self, chat_id: int, action: str, message_id: int | None = None) -> None:
+    def _send_timer_modes(self, chat_id: int, action: str, message_id: int | None = None) -> None:
         if action not in {"sleep", "shutdown"}:
             return
+        self._clear_waiting(chat_id)
         buttons = [
-            [("30 минут", f"timer:duration:{action}:1800"), ("1 час", f"timer:duration:{action}:3600")],
-            [("2 часа", f"timer:duration:{action}:7200"), ("Время HH:MM", f"timer:clock:{action}")],
+            [("Через", f"timer:mode:delay:{action}"), ("В точное время", f"timer:clock:{action}")],
             [("Назад", "menu:timer")],
         ]
-        self._respond(chat_id, "Выберите задержку или время.", buttons, message_id)
+        text = "Когда перевести ПК в сон?" if action == "sleep" else "Когда выключить ПК?"
+        self._respond(chat_id, text, buttons, message_id)
+
+    def _send_duration_options(self, chat_id: int, action: str, message_id: int | None = None) -> None:
+        if action not in {"sleep", "shutdown"}:
+            return
+        self._clear_waiting(chat_id)
+        buttons = [
+            [("15 минут", f"timer:duration:{action}:900"), ("30 минут", f"timer:duration:{action}:1800")],
+            [("1 час", f"timer:duration:{action}:3600"), ("2 часа", f"timer:duration:{action}:7200")],
+            [("Указать самому", f"timer:delay-input:{action}")],
+            [("Назад", f"timer:action:{action}")],
+        ]
+        text = "Через сколько перевести ПК в сон?" if action == "sleep" else "Через сколько выключить ПК?"
+        self._respond(chat_id, text, buttons, message_id)
 
     def _send_extra(self, chat_id: int, message_id: int | None = None) -> None:
+        self._clear_waiting(chat_id)
         buttons = [[("Сон сейчас", "immediate:sleep"), ("Выключить сейчас", "immediate:shutdown")], [("Назад", "menu:main")]]
         self._respond(chat_id, "Осторожно: действие начнётся через 15 секунд после подтверждения.", buttons, message_id)
