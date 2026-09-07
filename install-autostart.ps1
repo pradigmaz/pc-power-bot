@@ -37,4 +37,5 @@ $principal = New-ScheduledTaskPrincipal -UserId $currentUser -LogonType Interact
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable
 
 Register-ScheduledTask -TaskName $TaskName -TaskPath $taskPath -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Local Telegram PC power bot' | Out-Null
-Write-Host "Created $taskPath$TaskName for $currentUser. It starts after this user signs in."
+Start-ScheduledTask -TaskName $TaskName -TaskPath $taskPath -ErrorAction Stop
+Write-Host "Created $taskPath$TaskName for $currentUser and started it now. It also starts after this user signs in."
