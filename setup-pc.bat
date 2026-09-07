@@ -58,7 +58,7 @@ if errorlevel 1 echo [WARNING] powercfg /a did not complete. Check sleep manuall
 if not errorlevel 1 (
     set "PCPB_TASK_EXISTS=1"
     echo.
-    echo Autostart task \PcPowerBot already exists. It was not replaced.
+    echo Autostart task \PcPowerBot already exists.
 )
 
 echo.
@@ -67,7 +67,18 @@ if not defined PCPB_ENV_FILE_READY (
     echo Autostart is not offered until .env exists next to bot.py.
     goto :done
 )
-if defined PCPB_TASK_EXISTS goto :done
+if defined PCPB_TASK_EXISTS (
+    choice /C UE /N /M "[U] Update autostart and start bot  [E] Exit"
+    if errorlevel 2 goto :done
+
+    "%PCPB_PS%" -NoProfile -NonInteractive -File "%PCPB_ROOT%install-autostart.ps1" -PythonPath "%PCPB_PYTHON%" -ReplaceExisting
+    if errorlevel 1 (
+        echo [ERROR] Autostart was not updated. See the PowerShell message above.
+        goto :failed
+    )
+    echo Autostart updated. The bot starts without a console window.
+    goto :done
+)
 
 choice /C IE /N /M "[I] Install autostart  [E] Exit"
 if errorlevel 2 goto :done
@@ -80,7 +91,7 @@ if errorlevel 1 (
     echo [ERROR] Autostart was not installed. See the PowerShell message above.
     goto :failed
 )
-echo Autostart installed. It starts after the next Windows sign-in.
+echo Autostart installed. The bot starts now without a console window.
 
 :done
 popd >nul
@@ -91,6 +102,6 @@ exit /b 0
 :failed
 if defined PCPB_PUSHED popd >nul 2>&1
 echo.
-echo Preflight stopped. Autostart was not created.
+echo Preflight stopped. Autostart was not changed.
 pause
 exit /b 1
