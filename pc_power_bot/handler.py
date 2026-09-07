@@ -96,6 +96,8 @@ class PowerBot:
             self._duration_prompt(chat_id, data.removeprefix("timer:delay-input:"), message_id)
         elif data.startswith("timer:clock:"):
             self._clock_prompt(chat_id, data.removeprefix("timer:clock:"), message_id)
+        elif data == "menu:help":
+            self._send_help(chat_id, message_id)
         elif data == "menu:extra":
             self._send_extra(chat_id, message_id)
         elif data.startswith("immediate:"):
@@ -328,27 +330,48 @@ class PowerBot:
     @staticmethod
     def _proposal_buttons(proposal: Proposal, replacement: bool = False) -> ButtonRows:
         confirm = "replace" if replacement else "confirm"
-        label = "Заменить" if replacement else "Подтвердить"
-        return [[(label, f"{confirm}:{proposal.token}"), ("Отмена", f"cancel:{proposal.token}")]]
+        label = "🔁 Заменить" if replacement else "✅ Подтвердить"
+        return [[(label, f"{confirm}:{proposal.token}"), ("✖️ Отмена", f"cancel:{proposal.token}")]]
 
     @staticmethod
     def _main_buttons() -> ButtonRows:
         return [
-            [("⏱ Таймер", "menu:timer"), ("Статус", "action:status")],
-            [("Дополнительно", "menu:extra"), ("Отменить таймер", "action:cancel")],
+            [("⏱ Таймер", "menu:timer"), ("📋 Статус", "action:status")],
+            [("ℹ️ Инструкция", "menu:help"), ("⚙️ Дополнительно", "menu:extra")],
+            [("✖️ Отменить таймер", "action:cancel")],
         ]
 
     @staticmethod
     def _timer_back_buttons(action: str) -> ButtonRows:
-        return [[("Назад", f"timer:action:{action}")]]
+        return [[("◀️ Назад", f"timer:action:{action}")]]
 
     def _send_main(self, chat_id: int, message_id: int | None = None) -> None:
         self._clear_waiting(chat_id)
         self._respond(chat_id, "Выберите действие.", self._main_buttons(), message_id)
 
+    def _send_help(self, chat_id: int, message_id: int | None = None) -> None:
+        self._clear_waiting(chat_id)
+        text = (
+            "Как пользоваться:\n\n"
+            "1. ⏱ Таймер → 🌙 Сон или ⏻ Выключить ПК.\n"
+            "2. Выберите ⏱ Через время или 🕒 В точное время.\n"
+            "3. Проверьте действие и нажмите ✅ Подтвердить.\n\n"
+            "📋 Статус — посмотреть активный таймер.\n"
+            "✖️ Отменить таймер — отменить его.\n"
+            "⚙️ Дополнительно — сон или выключение через 15 секунд после подтверждения.\n\n"
+            "Если бот не отвечает:\n"
+            "• ПК включён и подключён к интернету;\n"
+            "• VPN включён;\n"
+            "• в Windows выполнен вход."
+        )
+        self._respond(chat_id, text, self._main_buttons(), message_id)
+
     def _send_timer_actions(self, chat_id: int, message_id: int | None = None) -> None:
         self._clear_waiting(chat_id)
-        buttons = [[("Сон", "timer:action:sleep"), ("Выключить ПК", "timer:action:shutdown")], [("Назад", "menu:main")]]
+        buttons = [
+            [("🌙 Сон", "timer:action:sleep"), ("⏻ Выключить ПК", "timer:action:shutdown")],
+            [("◀️ Назад", "menu:main")],
+        ]
         self._respond(chat_id, "Что сделать с ПК?", buttons, message_id)
 
     def _send_timer_modes(self, chat_id: int, action: str, message_id: int | None = None) -> None:
@@ -356,8 +379,8 @@ class PowerBot:
             return
         self._clear_waiting(chat_id)
         buttons = [
-            [("Через", f"timer:mode:delay:{action}"), ("В точное время", f"timer:clock:{action}")],
-            [("Назад", "menu:timer")],
+            [("⏱ Через время", f"timer:mode:delay:{action}"), ("🕒 В точное время", f"timer:clock:{action}")],
+            [("◀️ Назад", "menu:timer")],
         ]
         text = "Когда перевести ПК в сон?" if action == "sleep" else "Когда выключить ПК?"
         self._respond(chat_id, text, buttons, message_id)
@@ -369,13 +392,16 @@ class PowerBot:
         buttons = [
             [("15 минут", f"timer:duration:{action}:900"), ("30 минут", f"timer:duration:{action}:1800")],
             [("1 час", f"timer:duration:{action}:3600"), ("2 часа", f"timer:duration:{action}:7200")],
-            [("Другое время", f"timer:delay-input:{action}")],
-            [("Назад", f"timer:action:{action}")],
+            [("✍️ Другое время", f"timer:delay-input:{action}")],
+            [("◀️ Назад", f"timer:action:{action}")],
         ]
         text = "Через сколько перевести ПК в сон?" if action == "sleep" else "Через сколько выключить ПК?"
         self._respond(chat_id, text, buttons, message_id)
 
     def _send_extra(self, chat_id: int, message_id: int | None = None) -> None:
         self._clear_waiting(chat_id)
-        buttons = [[("Сон сейчас", "immediate:sleep"), ("Выключить сейчас", "immediate:shutdown")], [("Назад", "menu:main")]]
+        buttons = [
+            [("🌙 Сон сейчас", "immediate:sleep"), ("⏻ Выключить сейчас", "immediate:shutdown")],
+            [("◀️ Назад", "menu:main")],
+        ]
         self._respond(chat_id, "Осторожно: действие начнётся через 15 секунд после подтверждения.", buttons, message_id)

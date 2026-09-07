@@ -122,7 +122,21 @@ class PowerBotTests(unittest.TestCase):
 
         labels = [label for row in self.api.messages[-1][2] for label, _ in row]
 
-        self.assertEqual(labels, ["⏱ Таймер", "Статус", "Дополнительно", "Отменить таймер"])
+        self.assertEqual(
+            labels,
+            ["⏱ Таймер", "📋 Статус", "ℹ️ Инструкция", "⚙️ Дополнительно", "✖️ Отменить таймер"],
+        )
+
+    def test_instruction_is_shown_in_the_existing_control_panel(self) -> None:
+        panel_id = 77
+        self.bot.handle_update(self.callback("menu:help", message_id=panel_id))
+
+        _, edited_message_id, text, buttons = self.api.edits[-1]
+
+        self.assertEqual(self.api.messages, [])
+        self.assertEqual(edited_message_id, panel_id)
+        self.assertIn("VPN включён", text)
+        self.assertIn("ℹ️ Инструкция", [label for row in buttons for label, _ in row])
 
     def test_no_power_action_happens_before_confirmation(self) -> None:
         self.bot.handle_update(self.callback("immediate:shutdown"))
@@ -156,7 +170,10 @@ class PowerBotTests(unittest.TestCase):
 
         _, _, text, buttons = self.api.edits[-1]
         self.assertEqual(text, "Когда перевести ПК в сон?")
-        self.assertEqual([label for row in buttons for label, _ in row], ["Через", "В точное время", "Назад"])
+        self.assertEqual(
+            [label for row in buttons for label, _ in row],
+            ["⏱ Через время", "🕒 В точное время", "◀️ Назад"],
+        )
 
     def test_relative_timer_keeps_its_duration_after_confirmation(self) -> None:
         self.bot.handle_update(self.callback("timer:duration:sleep:5400"))
